@@ -121,6 +121,8 @@ let prevHp = -1;
 let shakeUntil = 0;
 let sparks = [];
 let paperCutCount = 0;
+let lastCigSpawn = -Infinity;
+const CIG_COOLDOWN = 5000;   // 5s between cigs — prevents chain-stun deaths
 
 const BELT_SURFACE_Y = 472;   // y-pos of belt top surface (belt.png mapped to 720 canvas)
 const MON_X = 10, MON_Y = 220, MON_W = 420;
@@ -156,11 +158,13 @@ function nextVt() {
 }
 
 function randObj() {
+  const now = performance.now();
+  const cigAllowed = now - lastCigSpawn > CIG_COOLDOWN;
   const r = Math.random();
   let img, type, targetH;
-  if (r < 0.30)      { type = 'paper'; img = imgs.paper; targetH = 170; }
-  else if (r < 0.50) { type = 'cig';   img = imgs.cig;   targetH = 160; }
-  else               { type = 'vt';    img = nextVt();   targetH = 260; }
+  if (r < 0.30)                      { type = 'paper'; img = imgs.paper; targetH = 170; }
+  else if (r < 0.50 && cigAllowed)   { type = 'cig';   img = imgs.cig;   targetH = 160; }
+  else                               { type = 'vt';    img = nextVt();   targetH = 260; }
   const sz = sizeByHeight(img, targetH, targetH);
   return { type, img, w: sz.w, h: sz.h };
 }
@@ -181,6 +185,7 @@ function spawn() {
   o.broken = false;
   o.brokenTime = 0;
   o.triggered = false;
+  if (o.type === 'cig') lastCigSpawn = performance.now();
   objects.push(o);
 }
 
@@ -281,9 +286,9 @@ function update(dt, now) {
   }
   if (state !== 'play') return;
   elapsed = (now - startTime) / 1000;
-  speedMul = 1 + Math.floor(elapsed / 10);   // +1x every 10s: 1x, 2x, 3x, 4x...
+  speedMul = 1 + Math.floor(elapsed / 10) * 0.5;   // +50% every 10s: 1.0x, 1.5x, 2.0x, 2.5x...
   beltSpeed = BASE_SPEED * speedMul;
-  spawnInterval = Math.max(150, 500 / speedMul);
+  spawnInterval = Math.max(180, 500 / speedMul);
 
   if (now - lastSpawn > spawnInterval) {
     lastSpawn = now;
@@ -406,6 +411,24 @@ function applyShake() {
   }
 }
 
+function drawStunLabel() {
+  const now = performance.now();
+  if (now >= stunUntil) return;
+  ctx.save();
+  const cx = MON_X + MON_W / 2 + 10;
+  const bob = Math.sin(now / 120) * 6;
+  const cy = MON_Y + 70 + bob;
+  ctx.font = 'bold 88px "Microsoft JhengHei", "Arial Black", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineWidth = 10;
+  ctx.strokeStyle = '#000';
+  ctx.strokeText('暈眩', cx, cy);
+  ctx.fillStyle = '#FFE45C';
+  ctx.fillText('暈眩', cx, cy);
+  ctx.restore();
+}
+
 function draw() {
   if (state === 'over') return;   // freeze the last frame — no redraws after death
   ctx.clearRect(0, 0, W, H);
@@ -414,6 +437,7 @@ function draw() {
   drawBelt();                     // Belt covers monster lower body
   for (const o of objects) drawObject(o);  // Objects on top of belt
   drawSparks();
+  drawStunLabel();                // 暈眩 label over stun gif
   applyShake();
 
   const t = elapsed;
@@ -450,6 +474,7 @@ function reset() {
   vtBag = [];
   paperCutCount = 0;
   speedMul = 1.0;
+  lastCigSpawn = -Infinity;
   document.getElementById('endgame').style.display = 'none';
   document.getElementById('overlay').style.display = 'none';
   document.getElementById('stun').style.display = 'none';
