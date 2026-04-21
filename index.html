@@ -65,7 +65,13 @@ const AP = {
   cig:    'a/obj/cig.png',
   heart:  'a/ui/heart.png',
 };
-const VT_FILES = ['v1.gif','v2.png','v3.png','v4.png','v5.png','v6.png','v7.png','v8.png','v9.png'];
+const VT_FILES = ['v1.gif','v2.png','v3.png','v4.png','v5.png','v6.png','v7.png','v8.png','v9.png','v10.png'];
+// Visual names for charge-capable VTs (tiger + 紫紅仙女)
+const CHARGE_VT_NAMES = new Set(['v1.gif', 'v8.png']);
+const CHARGE_UNLOCK_SEC = 10;   // 蓄力機制在 10 秒後才啟用
+const CHARGE_PROB = 0.30;
+const CHARGE_TRIGGER_X = 900;   // VT 進入畫面到這個 x 位置才開始蓄力
+const CHARGE_DUR = 1000;        // 蓄力 1 秒
 const SP = {
   cut:  'a/se/cut.aac',
   miss: 'a/se/miss.aac',
@@ -124,6 +130,7 @@ let paperCutCount = 0;
 let lastCigSpawn = -Infinity;
 const CIG_COOLDOWN = 5000;   // 5s between cigs — prevents chain-stun deaths
 let pausedAt = 0;
+let endgameTimer = null;     // tracks the 1.5s death-screen timeout so reset can cancel it
 
 const BELT_SURFACE_Y = 472;   // y-pos of belt top surface (belt.png mapped to 720 canvas)
 const MON_X = 10, MON_Y = 220, MON_W = 420;
@@ -182,12 +189,42 @@ function spawn() {
   if (!canSpawn()) return;
   const o = randObj();
   o.x = W + 80;
-  o.y = BELT_SURFACE_Y + 40;   // bottom of object sits firmly on belt surface
+  o.y = BELT_SURFACE_Y + 40;
   o.broken = false;
   o.brokenTime = 0;
   o.triggered = false;
+  o.willCharge = false;
+  o.charging = false;
+  o.chargeDone = false;
+
+  // Charge roll: VT tarzan/04133 only, 10s+ elapsed, paper on screen, 30% chance
+  if (o.type === 'vt' && elapsed >= CHARGE_UNLOCK_SEC) {
+    const imgFile = o.img.src.split('/').pop().split('?')[0];
+    if (CHARGE_VT_NAMES.has(imgFile) && hasPaperOnScreen() && Math.random() < CHARGE_PROB) {
+      o.willCharge = true;
+    }
+  }
+
   if (o.type === 'cig') lastCigSpawn = performance.now();
   objects.push(o);
+}
+
+function hasPaperOnScreen() {
+  for (const o of objects) {
+    if (o.type === 'paper' && !o.broken && o.x > 0 && o.x < W) return true;
+  }
+  return false;
+}
+
+function nearestAlivePaper(ref) {
+  let best = null, bestD = Infinity;
+  for (const o of objects) {
+    if (o.type === 'paper' && !o.broken && o.x > 0 && o.x < W) {
+      const d = Math.abs(o.x - ref.x);
+      if (d < bestD) { bestD = d; best = o; }
+    }
+  }
+  return best;
 }
 
 function attack() {
@@ -258,7 +295,9 @@ function takeDamage() {
     document.getElementById('endgame').style.display = 'block';
     const finalPaper = paperCutCount;
     const finalTime = elapsed.toFixed(1);
-    setTimeout(() => {
+    endgameTimer = setTimeout(() => {
+      endgameTimer = null;
+      if (state !== 'over') return;    // reset may have already switched to play
       const ov = document.getElementById('overlay');
       ov.style.display = 'flex';
       ov.innerHTML = `
@@ -292,9 +331,9 @@ function update(dt, now) {
   }
   if (state !== 'play') return;
   elapsed = (now - startTime) / 1000;
-  speedMul = 1 + Math.floor(elapsed / 10) * 0.5;   // +50% every 10s: 1.0x, 1.5x, 2.0x, 2.5x...
+  speedMul = 1 + Math.floor(elapsed / 10) * 0.3;   // +30% every 10s: 1.0x, 1.3x, 1.6x, 1.9x...
   beltSpeed = BASE_SPEED * speedMul;
-  spawnInterval = Math.max(180, 500 / speedMul);
+  spawnInterval = Math.max(200, 500 / speedMul);
 
   if (now - lastSpawn > spawnInterval) {
     lastSpawn = now;
@@ -304,7 +343,29 @@ function update(dt, now) {
   const dtf = dt / 16.67;
 
   for (const o of objects) {
-    if (!o.broken) o.x -= beltSpeed * dtf;
+    if (o.broken) continue;
+
+    // Charge state machine: trigger -> hold 1s -> swap with nearest paper
+    if (o.charging) {
+      if (now - o.chargeStart > CHARGE_DUR) {
+        const paper = nearestAlivePaper(o);
+        if (paper) {
+          const tx = o.x, ty = o.y;
+          o.x = paper.x; o.y = paper.y;
+          paper.x = tx;  paper.y = ty;
+        }
+        o.charging = false;
+        o.chargeDone = true;
+      }
+      continue;   // frozen during charge
+    }
+    if (o.willCharge && !o.chargeDone && o.x <= CHARGE_TRIGGER_X) {
+      o.charging = true;
+      o.chargeStart = now;
+      continue;
+    }
+
+    o.x -= beltSpeed * dtf;
   }
 
   for (const o of objects) {
@@ -367,7 +428,37 @@ function drawMonster() {
   }
 }
 
+function drawChargeGlow(o) {
+  const t = (performance.now() - o.chargeStart) / CHARGE_DUR;
+  const pulse = 0.5 + 0.5 * Math.sin(t * Math.PI * 10);
+  const cx = o.x, cy = o.y - o.h / 2;
+  const r = Math.max(o.w, o.h) / 2 + 20 + pulse * 14;
+  ctx.save();
+  ctx.shadowColor = 'rgba(255,50,50,0.9)';
+  ctx.shadowBlur = 55 + pulse * 25;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = `rgba(255,30,30,${0.18 + pulse * 0.22})`;
+  ctx.fill();
+  ctx.strokeStyle = `rgba(255,120,120,${0.55 + pulse * 0.35})`;
+  ctx.lineWidth = 6 + pulse * 3;
+  ctx.stroke();
+  // jitter text above
+  const jx = (Math.random() - 0.5) * 10;
+  const jy = (Math.random() - 0.5) * 10;
+  ctx.font = 'bold 34px "Microsoft JhengHei", "Arial Black", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineWidth = 5;
+  ctx.strokeStyle = '#fff';
+  ctx.strokeText('蓄力', cx + jx, cy - r - 14 + jy);
+  ctx.fillStyle = '#FF2E2E';
+  ctx.fillText('蓄力', cx + jx, cy - r - 14 + jy);
+  ctx.restore();
+}
+
 function drawObject(o) {
+  if (o.charging) drawChargeGlow(o);
   if (!o.img.complete || !o.img.naturalHeight) return;
   const x = o.x - o.w / 2, y = o.y - o.h;
   if (o.broken) {
@@ -487,6 +578,7 @@ function draw() {
 }
 
 function reset() {
+  if (endgameTimer) { clearTimeout(endgameTimer); endgameTimer = null; }
   hp = 3; prevHp = -1;
   state = 'play';
   startTime = performance.now();
@@ -523,16 +615,22 @@ function loop(now) {
 document.addEventListener('keydown', e => {
   if (e.code === 'Space') {
     e.preventDefault();
-    if (state === 'start' || state === 'over') reset();
-    else if (state === 'play') attack();
+    if (state === 'start' || state === 'over') {
+      if (e.repeat) return;   // don't let held Space chain-reset
+      reset();
+    } else if (state === 'play') {
+      attack();
+    }
+    // state === 'paused' — SPACE does nothing, never bleeds through
   } else if (e.code === 'Escape') {
+    if (e.repeat) return;
     e.preventDefault();
     if (state === 'play') {
       pausedAt = performance.now();
       state = 'paused';
       if (bgm) bgm.pause();
     } else if (state === 'paused') {
-      startTime += performance.now() - pausedAt;   // exclude paused time from elapsed
+      startTime += performance.now() - pausedAt;
       state = 'play';
       if (bgm) bgm.play().catch(()=>{});
     }
