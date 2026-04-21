@@ -69,9 +69,9 @@ const VT_FILES = ['v1.gif','v2.png','v3.png','v4.png','v5.png','v6.png','v7.png'
 // Visual names for charge-capable VTs (tiger + 紫紅仙女)
 const CHARGE_VT_NAMES = new Set(['v1.gif', 'v8.png']);
 const CHARGE_UNLOCK_SEC = 10;   // 蓄力機制在 10 秒後才啟用
-const CHARGE_PROB = 0.30;
+const CHARGE_PROB = 1.0;        // 條件達成時 100% 蓄力
 const CHARGE_TRIGGER_X = 900;   // VT 進入畫面到這個 x 位置才開始蓄力
-const CHARGE_DUR = 1000;        // 蓄力 1 秒
+const CHARGE_DUR = 800;         // 蓄力 0.8 秒
 const SP = {
   cut:  'a/se/cut.aac',
   miss: 'a/se/miss.aac',
@@ -121,7 +121,8 @@ let lastSpawn = 0, spawnInterval = 500;
 let objects = [];
 let damageFlash = 0;
 let attackState = 0, attackStart = 0;
-const ATK_FRAME = 75;
+let attackDidCut = false;
+const ATK_FRAME = 60;
 let stunUntil = 0;
 let prevHp = -1;
 let shakeUntil = 0;
@@ -233,6 +234,7 @@ function attack() {
   if (attackState !== 0) return;
   attackStart = performance.now();
   attackState = 1;
+  attackDidCut = false;
   playSfx('cut');
 }
 
@@ -243,10 +245,12 @@ function updateAttack(now) {
     attackState = 0;
     return;
   }
-  const prev = attackState;
-  const nxt = phase + 1;
-  attackState = nxt;
-  if (nxt === 2 && prev < 2) doCut();
+  attackState = phase + 1;
+  // Guarantee doCut fires once per swing — even if a slow frame skipped phase 2.
+  if (attackState >= 2 && !attackDidCut) {
+    attackDidCut = true;
+    doCut();
+  }
 }
 
 function doCut() {
@@ -587,6 +591,7 @@ function reset() {
   objects = [];
   damageFlash = 0;
   attackState = 0;
+  attackDidCut = false;
   stunUntil = 0;
   shakeUntil = 0;
   sparks = [];
